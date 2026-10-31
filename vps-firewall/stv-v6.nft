@@ -1,0 +1,21 @@
+# A14 - firewall IPv6 dell'host (solo traffico entrante da ens3). Creato 2026-10-29.
+# Rollback: nft delete table ip6 stv_v6
+table ip6 stv_v6
+delete table ip6 stv_v6
+table ip6 stv_v6 {
+	chain input {
+		type filter hook input priority filter - 10; policy accept;
+		iifname != "ens3" accept
+		ct state established,related accept
+		ct state invalid drop
+		icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, echo-request, echo-reply, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, mld-listener-query, mld-listener-report, mld2-listener-report } accept
+		tcp dport 53197 accept
+		limit rate 10/minute burst 5 packets log prefix "stv-v6-drop: "
+		counter drop
+	}
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		iifname "ens3" ct state established,related accept
+		iifname "ens3" counter drop
+	}
+}

@@ -1,0 +1,150 @@
+#!/bin/bash
+# /usr/local/sbin/stv-backup-gate  (root:root 755)  v3.1 - 2026-10-31
+# Unico comando consentito alla chiave di backup di stv-backup (via sudo, comando forzato).
+# Accetta solo parole chiave fisse ed esegue esportazioni in sola lettura su stdout.
+# v3: container attuali php74 e nginx-server. webalpine e' dismesso (fermo dal 30/10/2026)
+#     e non e' referenziato: le sue ultime immagini restano negli snapshot images-lxc/code vecchi.
+# v3.1: un container non RUNNING fa fallire il componente (lxc exec esce con rc 1 e sarebbe
+#     stato scambiato per l'avviso di tar); output dei tar verificato prima dell'invio.
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin
+export LC_ALL=C
+
+CMD="${SSH_ORIGINAL_COMMAND:-}"
+log() { logger -t stv-backup-gate -- "$*"; }
+
+# tar dentro un container (percorsi relativi a /). Il container deve essere RUNNING.
+# rc di tar: 0 ok; 1 = file cambiato durante la lettura (avviso); >= 2 = errore.
+ctar() { # $1 = container, resto = percorsi
+  local ct="$1" rc=0 st
+  shift
+  st=$(lxc list "$ct" --format csv -c s 2>/dev/null | head -n 1)
+  if [[ "$st" != "RUNNING" ]]; then
+    log "code: container $ct non RUNNING (stato='${st:-sconosciuto}'): FALLITO"
+    return 3
+  fi
+  lxc exec "$ct" --mode=non-interactive -- tar -C / -cf - "$@" || rc=$?
+  if (( rc > 1 )); then
+    log "code: tar in $ct FALLITO (rc=$rc)"
+    return "$rc"
+  fi
+  if (( rc == 1 )); then
+    log "code WARN: tar in $ct rc=1 (file cambiati durante la lettura)"
+  fi
+  return 0
+}
+
+# verifica che un file sia un tar leggibile e non vuoto
+tar_ok() { # $1 = file
+  [[ -s "$1" ]] && tar -tf "$1" >/dev/null 2>&1
+}
+
+case "$CMD" in
+  "rsync --server --sender "*)
+    log "docs: rsync avviato"
+    exec /usr/bin/rrsync -ro /var/lxd/uploads
+    ;;
+
+  db)
+    # --force: le viste non valide non bloccano il dump.
+    # Il dump e' valido solo se termina con il footer "-- Dump completed"; gli errori vanno nel syslog.
+    log "db: mysqldump avviato"
+    tmp=$(mktemp -d /var/tmp/stv-db.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    rc=0
+    mysqldump --defaults-file=/etc/mysql/debian.cnf \
+      --all-databases --single-transaction --quick \
+      --routines --triggers --events \
+      --set-gtid-purged=OFF --no-tablespaces --force \
+      > "$tmp/dump.sql" 2> "$tmp/err.log" || rc=$?
+    grep -v 'World-writable config file' "$tmp/err.log" | head -50 | while IFS= read -r l; do log "db WARN: $l"; done || true
+    if ! tail -n 1 "$tmp/dump.sql" | grep -q '^-- Dump completed'; then
+      log "db: dump INCOMPLETO (rc mysqldump=$rc)"
+      exit 1
+    fi
+    log "db: completato (rc mysqldump=$rc)"
+    gzip -c "$tmp/dump.sql"
+    ;;
+
+  code)
+    # Codice e configurazione dei container attuali. Due tar non compressi in un tar unico,
+    # compressi una volta sola per il trasporto (il lato CT108 decomprime prima di restic).
+    log "code: php74 + nginx-server avviato"
+    tmp=$(mktemp -d /var/tmp/stv-code.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    ctar php74 \
+      var/www/localhost etc/nginx etc/vsftpd.conf etc/fail2ban etc/php \
+      opt/php74 usr/local/etc usr/local/php usr/local/lib/php \
+      usr/local/bin/php usr/local/sbin/php-fpm root/php7 \
+      > "$tmp/php74.tar" || exit 1
+    ctar nginx-server etc/nginx etc/letsencrypt etc/cron.d \
+      > "$tmp/nginx-server.tar" || exit 1
+    for f in php74.tar nginx-server.tar; do
+      if ! tar_ok "$tmp/$f"; then
+        log "code: $f vuoto o illeggibile: FALLITO"
+        exit 1
+      fi
+    done
+    log "code: completato"
+    tar -C "$tmp" -cf - php74.tar nginx-server.tar | gzip -c
+    ;;
+
+  pec)
+    log "pec: tar sorgente pec-mailer avviato"
+    tar -C /home/ubuntu -czf - \
+      --exclude=docker-send/dockervenv --exclude=docker-send/get-pip.py \
+      docker-send
+    ;;
+
+  hostcfg)
+    log "hostcfg: avviato"
+    tmp=$(mktemp -d /var/tmp/stv-hostcfg.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    for c in $(lxc list --format csv -c n); do
+      lxc config show "$c" --expanded > "$tmp/lxc-$c.yaml"
+    done
+    lxc list --format yaml          > "$tmp/lxc-list.yaml"
+    lxc profile show default        > "$tmp/lxc-profile-default.yaml"
+    lxc storage show local          > "$tmp/lxc-storage-local.yaml"
+    lxc network list --format yaml  > "$tmp/lxc-networks.yaml"
+    lxc exec php74 --mode=non-interactive -- sh -c \
+      'php -v 2>/dev/null | head -n 1; php -i 2>/dev/null | grep -E "^(Configure Command|PHP Version|Loaded Configuration File) "' \
+      > "$tmp/php74-build.txt" 2>/dev/null || true
+    docker inspect pec-mailer       > "$tmp/docker-pec-mailer.json" 2>/dev/null || true
+    snap list                       > "$tmp/snap-list.txt"
+    dpkg --get-selections           > "$tmp/dpkg-selections.txt"
+    iptables-save                   > "$tmp/iptables-save.v4"
+    ip6tables-save                  > "$tmp/iptables-save.v6"
+    nft list ruleset                > "$tmp/nft-ruleset.txt" 2>/dev/null || true
+    for u in root ubuntu; do crontab -l -u "$u" > "$tmp/crontab-$u.txt" 2>/dev/null || true; done
+    tar -czf - -C / etc -C "$tmp" .
+    ;;
+
+  images-lxc)
+    # --compression none: i tar interni restano non compressi, cosi' restic deduplica tra le settimane.
+    log "images-lxc: lxc export php74 e nginx-server avviato"
+    tmp=$(mktemp -d /var/tmp/stv-images.XXXXXX)
+    trap 'rm -rf "$tmp"' EXIT
+    for c in php74 nginx-server; do
+      lxc export "$c" "$tmp/$c.tar" --instance-only --compression none >/dev/null
+      if ! tar_ok "$tmp/$c.tar"; then
+        log "images-lxc: export di $c vuoto o illeggibile: FALLITO"
+        exit 1
+      fi
+    done
+    log "images-lxc: completato"
+    tar -C "$tmp" -cf - php74.tar nginx-server.tar | gzip -1 -c
+    ;;
+
+  images-docker)
+    log "images-docker: docker save avviato"
+    docker save pec-mailer:latest | gzip -c
+    ;;
+
+  *)
+    log "RIFIUTATO: ${CMD:0:200}"
+    echo "comando non ammesso" >&2
+    exit 1
+    ;;
+esac

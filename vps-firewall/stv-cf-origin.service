@@ -1,0 +1,14 @@
+[Unit]
+Description=STV: 80/443 verso i container solo da IP Cloudflare (tabella nft inet stv_cf_origin)
+After=network-pre.target
+Wants=network-pre.target
+Before=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/stv-cf/cf-origin.nft
+ExecStop=/usr/sbin/nft delete table inet stv_cf_origin
+
+[Install]
+WantedBy=multi-user.target

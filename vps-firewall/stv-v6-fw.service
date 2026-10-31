@@ -1,0 +1,15 @@
+[Unit]
+Description=STV firewall IPv6 host (A14)
+Documentation=file:/etc/stv-cf/stv-v6.nft
+After=network-pre.target
+Before=network.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/stv-cf/stv-v6.nft
+ExecStop=/usr/sbin/nft delete table ip6 stv_v6
+
+[Install]
+WantedBy=multi-user.target
