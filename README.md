@@ -13,4 +13,6 @@ Ogni file è la copia di quanto è in produzione al momento del commit; lo sha25
 
 Non ancora nel repo: unit systemd `backup-stv*.service|timer` di CT108, `cf-origin-monitor.nft` (fase A, sostituita).
 
-Il registro delle modifiche e delle verifiche è nel Project "Gestionale StudioTecnicoVerro" (`claude/change-log.md`, `claude/registro-verifiche.md`).
+## docs-progetto/
+
+Copia dei 14 documenti del Project "Gestionale StudioTecnicoVerro" al 31/10/2026 (istruzioni, contesto, registro verifiche, change-log, todo-findings, registri del 29/10 e del 31/10, risposte dello sviluppatore, audit codice, schema DB, misura d'uso, stime AWS, specifica del nuovo gestionale). La fonte resta il Project: questa è una copia di archivio, da riallineare quando i file cambiano. Contengono IP, versioni e finding di sicurezza aperti: il repository deve restare privato. Nessun segreto (scansione eseguita prima del commit: solo hash sha256).

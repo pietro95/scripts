@@ -1,0 +1,64 @@
+# Audit offline del codice del gestionale (snapshot 21/10/2026)
+
+Nessun segreto in questo documento. Distinzione: VERIFICATO = output di comando sul codice dello snapshot; INFERENZA = dedotto dai file, non provato; DA VERIFICARE = serve un controllo sul VPS in produzione o nei log. Schema DB: vedi `claude/schema-db.md`.
+
+## Baseline e ambiente
+- Fonte: snapshot restic `code` 05a46b05 (21/10/2026 15:28 UTC), file `/stv-code-webalpine.tar` (401.836.032 byte). Contiene `/etc` del container (nginx, php, crontab) e `/var/www/localhost` (htdocs e beta).
+- Estratto da Pietro (root su CT 108, via `restic dump`) in `/work/code` sul CT 109 `srv-scratch-stv` (172.16.0.10, DHCP, Debian 13): 402 MB, 11.452 file. Filtro nftables dentro il CT (ingresso SSH solo da CT 108; LAN irraggiungibile; internet chiuso; restano DNS e DHCP, regole non persistenti). Strumenti: PHP 8.4 CLI, ripgrep, gitleaks, git, jq. Il DDL dello schema è in `/work/ddl/` (solo struttura). Nessun mount, nessuna password.
+- Il CT 109 contiene codice non fidato: NON eseguirlo. Da distruggere a fine audit (vedi change-log).
+- Il codice cambia ancora in produzione: modifiche in place il 06-12/10 (models/views) e il 20/10 (`views/header.php`, `assets/css/lib/bootstrap.css`). Lo snapshot è la baseline da congelare per specifica e revamp.
+
+## Fatti verificati sul codice
+| Tema | Fatto |
+|---|---|
+| Framework | CodeIgniter **2.1.3** (`CI_VERSION` in `system/core/CodeIgniter.php`). Non è CI3. |
+| Dimensioni | Codice proprio circa 105k righe: 59 controller (66,5k righe, `report.php` 9,5k, `aziende.php` 7k, `scheda_azienda.php` 6k), 127 modelli (4,2k righe in tutto, quasi vuoti), 52 view (34k). Libreria `default/` con DataMapper (CI). La logica sta nei controller. Vendor in `third_party`: PHPExcel, PhpWord, dompdf, mPDF, qrcode (613k righe). 375 chiamate `->query(` nel codice proprio. |
+| Dominio | Sicurezza sul lavoro (D.Lgs. 81/08): controller per aziende, lavoratori, DPI consegnati, formazione e corsi, nomine, infortuni, giudizi di idoneità, RLS, attestati, scadenze, commesse, PEC, download massivo, report. |
+| Config CI | `csrf_protection` FALSE, `global_xss_filtering` FALSE, `cookie_secure` FALSE; `sess_encrypt` e `cookie_httponly` non presenti; `log_threshold` 0; `encryption_key` valorizzata (46 caratteri, valore non letto). |
+| Hash password | `md5(` in `helpers/password_helper.php:24`, `controllers/ajax_utility.php` (5 punti), `controllers/utility.php:1330-1339`. Nessun uso di `password_hash`/`password_verify`. Colonne `password`/`password2` `varchar(45)` (compatibili con MD5, non con bcrypt). |
+| Pattern pericolosi | Nessuna occorrenza di `eval/assert/system/passthru/shell_exec/popen/gzinflate/str_rot13` nel codice proprio, tranne DataMapper (legittimo) e un commento in `constants.php`. `base64_decode` solo nelle librerie di cifratura. Limite: pattern scan non è prova di assenza di backdoor; non ancora eseguito su `third_party` e plugin, né il confronto con upstream. |
+| Webroot servito da nginx | root `htdocs`, nessuna restrizione sulle directory applicative. Nel webroot: `gestionale/gestionale/controllers/aziende.php.bk260926` (590 KB) e `scheda_azienda - Copia.php.txt` (449 KB), `default/default.rar` (107 KB), tre `corsi_lavoratori - Copia*.js`; `gestionale/upload/` con 13 file xlsx (elenchi lavoratori, MasterDipendenti, MasterAziende, `Master.xlsx`, del 19/01/2026), un `.docx.zip`; directory `cache/` (`.htaccess` di 13 byte, `document_tag_cache` 8,9 KB aggiornato il 21/10), `logs/`, `user_logs/`. |
+| Protezioni Apache | Il codice si affida a `.htaccess` (es. `cache/.htaccess`, `upload/.htaccess` di 33 byte); nginx lo ignora. `location ~ \.htaccess` blocca solo il download del file. |
+| PHP di esempio in produzione | 66 file PHP in `assets/` di demo/test dei plugin, tra cui `firebug-lite/plugin/proxy/proxy.php`, `Highcharts-4.1.8/exporting-server/php/php-batik/index.php`, esempi server-side DataTables e plupload `s3.php`. nginx esegue `.php` con `location ~ \.php$`. |
+| nginx attivo | `http.d/default.conf` (modificato il 21/10 10:45): server_name `vps-deae1a10.vps.ovh.net` (diverso dall'host reale `vps-deae2a20`), porte 80, 443 e 8443; vhost `intranetbeta.studiotecnicoverro.it` con root `/var/www/localhost/beta` (stub di 54 byte); phpMyAdmin su path oscuro (righe 87 e 142) sia su 443 sia su 8443; `deny 114.119.0.0/16` solo sulla porta 80; filtro `$lang_allowed` su Accept-Language. Ogni server ha `location ~ \.php$` generico verso php7-fpm e nessun `deny` su `upload/`, `cache/`, `logs/`. Copie `.bk/.copy/.ori/.func` nella stessa directory. |
+| Cron | Giornaliero 21:01: `curl` a `http://10.153.97.55/gestionale/home.php?<token>` con User-Agent da browser e `Accept-Language: it-IT` (il filtro lingua è quindi aggirabile con un header). certbot ogni 21 giorni. |
+| header.php | Nessun pattern di offuscamento (`eval`, `atob`, `fromCharCode`, `document.write`, iframe). Script esterni: `http://html5shim.googlecode.com/...` e `http://ajax.googleapis.com/...` (HTTP in chiaro), `https://code.highcharts.com/...` senza SRI. |
+| **Upload arbitrario** | `controllers/upload.php` (accesso: utente loggato con profilo ADMIN, COLLABORATORE o COMPANY_ADMIN, cioè anche un cliente): `allowed_types = '*'` in 6 funzioni su 7 (solo la liberatoria è limitata a pdf). Destinazioni: `APPPATH.'upload/documenti/Azienda<id>/'` (link simbolico a `/mtn/azienda`, quindi sotto il webroot), `APPPATH.'upload/'` (webroot, per `upload_massivo_dipendenti` e simili) e `APPPATH.'upload/documenti/'`. Nel flusso documentale il file viene salvato in chiaro e subito cifrato sul posto; nel flusso `upload_massivo_dipendenti` il file xlsx resta in chiaro in `upload/` (nessun `encrypt`/`unlink` nella funzione). nginx esegue qualunque `.php` sotto il webroot. **Conclusione (inferenza dal codice, non testata):** un utente autenticato con quei profili può salvare un `.php` in `gestionale/gestionale/upload/` o nella cartella documenti e richiamarlo via HTTP: esecuzione di codice nel container. Nel flusso documentale l'esecuzione è limitata dalla finestra tra upload e cifratura. |
+| Cifratura documenti | `libraries/StudioEncryption.php`, funzioni `encryptFileRAM`/`decryptFileRAM`. Formato file: `[salt 16 B][IV 16 B][ciphertext AES-256-CBC, PKCS7]`. Chiave derivata con `hash_pbkdf2('sha256', <passphrase>, salt, 100000, 32)` dalla stringa `vps_encr_file` in `config/config.php` (una sola passphrase per tutti i file; valore non letto). **Nessun MAC**: l'unica verifica è un round trip MD5 al momento della cifratura (`CheckFile`). File letti e cifrati interamente in RAM (`file_get_contents`). Cifratura sul posto (stesso percorso di input e output): se il round trip fallisce l'originale è già sovrascritto (il codice lancia eccezione, ma non ripristina). Chiamanti: `upload.php` (33 punti), `DocumentDownloader`, `download_massivo`, `aziende`, `ajax_utility`. Download: decifratura su `/tmp/<nome>.<time>.sdec` nel container, poi `readfile` e `unlink`. Varianti `TESTencryptFile` (streaming) e GCM: non usate (commentate o prefisso TEST). **Conseguenza per la migrazione:** formato semplice e noto, decifrabile da un programma indipendente se si ha la passphrase; il rischio è la passphrase, non l'algoritmo. |
+| Cifratura colonne | `libraries/encryption2.php` e `default/libraries/encryption.php` (CI3-style: AES-128-CBC, HMAC-SHA256 con la stessa chiave `encryption_key`, base64 `[HMAC][IV][ct]`). Usata solo nel modello `anag_dipendenti` per il campo `cognome` (`pre_save`); la decifratura in lettura è commentata nel modello. Stato dei dati nella colonna (testo in chiaro, cifrato o misto): da verificare sul DB. |
+
+## Inferenze (da confermare)
+- I `.bk`, `.txt`, `.rar`, gli xlsx in `upload/` e il `document_tag_cache` sono scaricabili da chiunque conosca l'URL, perché nginx serve il webroot senza restrizioni e `.htaccess` non ha effetto. Reachability esterna NON ancora verificata.
+- `md5` è usato per le password utente (da leggere il codice senza stampare valori).
+- CodeIgniter 2.1.3 non funziona su PHP 8 senza upgrade del framework: la migrazione richiesta allo sviluppatore equivale a una riscrittura parziale importante.
+- I dati trattati includono categorie particolari (idoneità sanitaria, infortuni): lo schema lo rende probabile (tabelle `cons_giudizi_idoneita`, `cons_infortuni`), i valori non sono stati letti. Se confermato, un accesso non autorizzato ai dati rientra nell'art. 9 GDPR.
+- Con permessi 777 sull'archivio e cifratura CBC senza MAC, chiunque abbia scrittura sull'archivio può alterare i documenti senza che l'applicazione lo rilevi (le modifiche di singoli blocchi CBC non sono rilevabili senza autenticazione).
+
+## Findings aperti (codice)
+| Priorità | Finding | Prossimo passo |
+|---|---|---|
+| **Critica** | Upload di file arbitrari (`allowed_types '*'`) dentro il webroot, con PHP eseguibile da nginx, raggiungibile da utenti autenticati incluso il profilo cliente (COMPANY_ADMIN). Le password sono MD5 (inferenza). Esecuzione di codice nel container = accesso a DB, chiave dei documenti e archivio | mitigazione immediata e reversibile da proporre: in nginx, prima del `location ~ \.php$`, `location ~* ^/gestionale/(gestionale/)?(upload\|cache\|logs\|user_logs)/.*\.(php\|phtml\|phar\|php[0-9])$ { return 403; }` su tutti i server, con `nginx -t` e rollback; poi verificare nei log nginx se esistono richieste a `.php` in quei percorsi; correzione applicativa (whitelist, upload fuori dal webroot) allo sviluppatore |
+| Alta | Dati personali di lavoratori in `gestionale/upload/*.xlsx` nel webroot servito senza autenticazione (presenza verificata: 13 file; raggiungibilità da verificare) | cercare nei log nginx accessi a `/gestionale/upload/` e ai file `.bk/.txt/.rar`; poi spostare fuori webroot o negare via nginx |
+| Alta | Sorgenti e backup nel webroot (`.bk260926`, `Copia.php.txt`, `default.rar`) | idem; negare per estensione e rimuovere |
+| Alta | Protezioni basate su `.htaccess` inefficaci su nginx (`cache/`, `upload/`, `logs/`, `user_logs/`, application) | regole nginx di deny sulle directory applicative |
+| Alta | Passphrase unica dei documenti (`vps_encr_file`) in `config/config.php`, nel codice sotto il webroot e nello snapshot del codice; stessa macchina dei documenti. Il furto del solo codice + archivio basta per decifrare tutto. Per l'archivio non c'è rotazione né chiave per file | la passphrase deve essere custodita fuori dal repository; nel revamp: chiavi per file wrappate con una chiave master fuori dal VPS |
+| Alta | Cifratura documenti senza MAC (CBC), con archivio a 777 | AEAD nel revamp; per ora correggere i permessi |
+| Alta | CI 2.1.3 non supportato e non portabile a PHP 8 | decisione revamp |
+| Alta | Password con MD5 (inferenza) | verificare formato degli hash nel DB senza stamparli (lunghezza e charset) |
+| Alta | 66 PHP di esempio eseguibili, tra cui un proxy PHP e un export server Batik | negare PHP in `assets/` in nginx; rimozione con lo sviluppatore |
+| Alta | phpMyAdmin raggiungibile su 443 e 8443 con path oscuro | già nei finding del registro; negare l'accesso da nginx o rimuovere |
+| Media | CSRF, filtro XSS globale e `cookie_secure` disattivati; sessioni senza `httponly` | specifica di sicurezza del revamp |
+| Media | Cifratura sul posto senza ripristino: un errore dopo la sovrascrittura lascia il file illeggibile | revamp: scrittura su file temporaneo e rename atomico |
+| Media | Download: file decifrato in `/tmp` del container con nome derivato da `$file_name` (da verificare sanificazione) | lettura di `DocumentDownloader` e chiamanti |
+| Media | Campo `cognome` di `anag_dipendenti` cifrato in scrittura ma non decifrato in lettura (decifratura commentata): possibile stato incoerente dei dati | verificare sul DB che valori contiene (solo lunghezza/charset) |
+| Media | Filtro `Accept-Language` aggirabile (il cron lo imposta) | non è un controllo di sicurezza |
+| Media | Config nginx con `server_name` di un altro VPS e molte copie `.bk` | pulizia con lo sviluppatore |
+| Media | Sviluppo in produzione senza VCS (modifiche in place il 20/10) | repository Git dopo audit segreti |
+| Bassa | Script esterni in HTTP e senza SRI in `header.php` | revamp |
+
+## Cosa non è stato fatto
+- Confronto d'integrità con upstream di CI 2.1.3 e dei plugin (serve riaprire l'uscita internet sul CT 109).
+- Lettura di `upload.php` oltre ai punti citati, `accesso*.php`, `utility.php` (autenticazione) con mascheramento delle stringhe.
+- Revisione dei log nginx su webalpine (accessi a upload, `.bk`, `server/php`, POST sospetti, richieste a `.php` in `upload/`).
+- Test della conformità dei file cifrati al formato (dimensione `n × 16 + 32`), da fare senza chiave sull'elenco con dimensioni dello snapshot `docs`.
+- Analisi dei moduli realmente usati (`user_logs`, access log) per il perimetro del revamp.
