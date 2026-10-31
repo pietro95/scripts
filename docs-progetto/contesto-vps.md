@@ -13,7 +13,7 @@ Stato: la parte "Dichiarato" viene dallo sviluppatore; la parte "Verificato 26/1
 ## Container LXD (verificato 26/10: tre container)
 - **nginx-server** (10.153.97.152): front end. Riceve 80/443 dal DNAT. Un solo vhost `intranet`, certificato Let's Encrypt (certbot timer), `real_ip` con range identici alla lista Cloudflare `/ips`. Niente Authenticated Origin Pulls.
 - **php74** (10.153.97.237, Ubuntu, build PHP 7.4 non-distro): riceve da nginx-server; nginx su 9980/9999, php-fpm su 0.0.0.0:9000, vsftpd su 43173.
-- **webalpine** (10.153.97.55, Alpine, unprivileged): non più il front end (era dichiarato come destinazione di 80/443). Contiene ancora nginx, php-fpm7, vsftpd 51141 (passive 30000-30100), certbot, cron PEC. Ruolo attuale da chiarire con lo sviluppatore.
+- **webalpine** (10.153.97.55, Alpine, unprivileged): **fermo dal 30/10/2026 21:18:57 CET, dismesso (dichiarato da Pietro il 31/10)**; il cron `aggiorna_scadenze` non è stato spostato. Descrizione precedente: non più il front end (era dichiarato come destinazione di 80/443). Contiene ancora nginx, php-fpm7, vsftpd 51141 (passive 30000-30100), certbot, cron PEC. Ruolo attuale da chiarire con lo sviluppatore.
 - LXD su `lxdbr0` 10.153.97.0/24 (gateway 10.153.97.1). I proxy device LXD ascoltano su wildcard `*` v4 e v6. Tabelle nft `inet lxd` / `inet lxc`.
 - Mount documenti: `/mtn/azienda` ← `/var/lxd/uploads/` sull'host, cifratura AES-256-CBC. Alias host `lxcalpine`.
 
@@ -41,5 +41,5 @@ Stato: la parte "Dichiarato" viene dallo sviluppatore; la parte "Verificato 26/1
 - Il gestionale richiede PHP < 8.
 
 ## Altro (da memoria progetto)
-- Backup OVH giornaliero alle 13, premium 7 copie. Piano locale Proxmox → NFS QNAP (solo archivio documentale e DB). Non verificato che i backup coprano i nuovi container.
+- Backup OVH giornaliero alle 13, premium 7 copie. Backup pull da CT108 (restic su NFS QNAP): dal 31/10 il gate v3.1 copre `php74` e `nginx-server` (prima solo `webalpine`); script in `pietro95/scripts`.
 - Cloudflare Free in produzione dal 25/10 come protezione aggiuntiva; origine non ancora chiusa.

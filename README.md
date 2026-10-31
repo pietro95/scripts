@@ -13,6 +13,17 @@ Ogni file è la copia di quanto è in produzione al momento del commit; lo sha25
 
 Non ancora nel repo: unit systemd `backup-stv*.service|timer` di CT108, `cf-origin-monitor.nft` (fase A, sostituita).
 
+## Regola: ogni aggiornamento del progetto aggiorna GitHub
+
+Decisione di Pietro, 31/10/2026 (regola 17 in `docs-progetto/istruzioni-progetto.md`, v11). Alla fine di ogni sessione che modifica il Project, nello stesso turno:
+
+1. copiare in `docs-progetto/` i file del Project modificati (stesso testo);
+2. se uno script o una unit è cambiato su VPS/CT108: aggiornare il file nel repo, verificare `sha256` repo = produzione e aggiornare la tabella sopra;
+3. scansione dei segreti (token, chiavi, password, stringhe esadecimali lunghe oltre agli sha256);
+4. commit e push su `main`.
+
+Il repository deve restare privato. Se il push non è possibile, il riepilogo di fine sessione lo dice.
+
 ## docs-progetto/
 
-Copia dei 14 documenti del Project "Gestionale StudioTecnicoVerro" al 31/10/2026 (istruzioni, contesto, registro verifiche, change-log, todo-findings, registri del 29/10 e del 31/10, risposte dello sviluppatore, audit codice, schema DB, misura d'uso, stime AWS, specifica del nuovo gestionale). La fonte resta il Project: questa è una copia di archivio, da riallineare quando i file cambiano. Contengono IP, versioni e finding di sicurezza aperti: il repository deve restare privato. Nessun segreto (scansione eseguita prima del commit: solo hash sha256).
+Copia dei 14 documenti del Project "Gestionale StudioTecnicoVerro" al 31/10/2026 (istruzioni v11, contesto, registro verifiche, change-log, todo-findings, registri del 29/10 e del 31/10, risposte dello sviluppatore, audit codice, schema DB, misura d'uso, stime AWS, specifica del nuovo gestionale). Aggiornati il 31/10 con la riparazione del backup: `registro-verifiche.md` (sezione Backup 31/10), `todo-findings-critici.md` (sezione B1-B6), `contesto-vps.md`, `istruzioni-progetto.md`, `change-log.md`; nuovo `registro-backup-2026-10-31.md`. La fonte resta il Project: questa è una copia di archivio, da riallineare a ogni modifica (regola sopra). Contengono IP, versioni e finding di sicurezza aperti: il repository deve restare privato. Nessun segreto (scansione eseguita prima del commit: solo hash sha256).
